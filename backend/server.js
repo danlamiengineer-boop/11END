@@ -4,29 +4,21 @@
  * One Network. One Destination. Everything You Need, Delivered.
  * ============================================================
  *
- * Purpose:
- * - Backend application bootstrap
- * - Security middleware foundation
- * - API foundation
- * - Health monitoring
- * - Central error handling
- * - Graceful shutdown
+ * Backend application bootstrap.
  *
- * Architecture:
- * Customer
- * Provider
- * PM
- * SPM
- * RPM
- * Admin
- *
- * Business modules will be connected through dedicated backend
- * modules as the platform is developed.
+ * Responsibilities:
+ * - Initialize Fastify
+ * - Load centralized configuration
+ * - Configure security
+ * - Configure application logging
+ * - Provide health monitoring
+ * - Provide API version foundation
+ * - Handle graceful shutdown
  *
  * IMPORTANT:
- * - No payment secrets are stored here.
- * - No API keys are stored here.
- * - Production credentials must come from environment variables.
+ * - No credentials are hard-coded.
+ * - Secrets come from environment configuration.
+ * - Business modules will be connected progressively.
  * ============================================================
  */
 
@@ -37,18 +29,26 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 
-const APP_NAME = '11END';
-const APP_VERSION = '1.0.0';
+import config from './config/index.js';
+import logger from './config/logger.js';
 
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '0.0.0.0';
+import {
+    checkDatabaseConnection,
+    closeDatabaseConnection,
+    registerDatabaseErrorHandler
+} from './config/database.js';
 
-const NODE_ENV = process.env.NODE_ENV || 'development';
+/**
+ * ------------------------------------------------------------
+ * APPLICATION
+ * ------------------------------------------------------------
+ */
 
 const server = Fastify({
-    logger: {
-        level: process.env.LOG_LEVEL || 'info'
-    }
+    loggerInstance: logger,
+
+    trustProxy:
+        config.app.environment === 'production'
 });
 
 /**
@@ -57,57 +57,122 @@ const server = Fastify({
  * ------------------------------------------------------------
  */
 
-await server.register(helmet, {
-    global: true
-});
+await server.register(
+    helmet,
+    {
+        global: true
+    }
+);
 
-await server.register(cors, {
-    origin:
-        process.env.CORS_ORIGIN ||
-        true,
-    credentials: true
-});
+await server.register(
+    cors,
+    {
+        origin:
+            config.security.corsOrigin ||
+            true,
 
-await server.register(rateLimit, {
-    max: 100,
-    timeWindow: '1 minute'
-});
+        credentials: true
+    }
+);
 
-/**
- * ------------------------------------------------------------
- * ROOT API INFORMATION
- * ------------------------------------------------------------
- */
-
-server.get('/', async () => {
-    return {
-        name: APP_NAME,
-        version: APP_VERSION,
-        status: 'online',
-        message:
-            '11END backend is running.'
-    };
-});
+await server.register(
+    rateLimit,
+    {
+        max: 100,
+        timeWindow: '1 minute'
+    }
+);
 
 /**
  * ------------------------------------------------------------
- * HEALTH CHECK
- * ------------------------------------------------------------
- *
- * Used by monitoring systems, deployment platforms and
- * infrastructure health checks.
+ * DATABASE
  * ------------------------------------------------------------
  */
 
-server.get('/health', async () => {
-    return {
-        status: 'healthy',
-        service: APP_NAME,
-        version: APP_VERSION,
-        environment: NODE_ENV,
-        timestamp: new Date().toISOString()
-    };
-});
+registerDatabaseErrorHandler(
+    logger
+);
+
+/**
+ * ------------------------------------------------------------
+ * ROOT ENDPOINT
+ * ------------------------------------------------------------
+ */
+
+server.get(
+    '/',
+    async () => {
+        return {
+            name: config.app.name,
+            version: config.app.version,
+            status: 'online',
+            message:
+                '11END backend is running.'
+        };
+    }
+);
+
+/**
+ * ------------------------------------------------------------
+ * HEALTH ENDPOINT
+ * ------------------------------------------------------------
+ */
+
+server.get(
+    '/health',
+    async (
+        request,
+        reply
+    ) => {
+        let database;
+
+        try {
+            database =
+                await checkDatabaseConnection();
+        } catch (error) {
+            request.log.error(
+                error,
+                '11END database health check failed.'
+            );
+
+            database = {
+                connected: false,
+                configured: true
+            };
+        }
+
+        const healthy =
+            database.connected ||
+            !database.configured;
+
+        return reply
+            .status(
+                healthy
+                    ? 200
+                    : 503
+            )
+            .send({
+                status:
+                    healthy
+                        ? 'healthy'
+                        : 'degraded',
+
+                service:
+                    config.app.name,
+
+                version:
+                    config.app.version,
+
+                environment:
+                    config.app.environment,
+
+                database,
+
+                timestamp:
+                    new Date().toISOString()
+            });
+    }
+);
 
 /**
  * ------------------------------------------------------------
@@ -115,13 +180,16 @@ server.get('/health', async () => {
  * ------------------------------------------------------------
  */
 
-server.get('/api/v1', async () => {
-    return {
-        name: APP_NAME,
-        version: 'v1',
-        status: 'available'
-    };
-});
+server.get(
+    '/api/v1',
+    async () => {
+        return {
+            name: config.app.name,
+            version: 'v1',
+            status: 'available'
+        };
+    }
+);
 
 /**
  * ------------------------------------------------------------
@@ -130,13 +198,20 @@ server.get('/api/v1', async () => {
  */
 
 server.setNotFoundHandler(
-    async (request, reply) => {
-        return reply.status(404).send({
-            error: 'Not Found',
-            message:
-                `Route ${request.method} ${request.url} was not found.`,
-            statusCode: 404
-        });
+    async (
+        request,
+        reply
+    ) => {
+        return reply
+            .status(404)
+            .send({
+                error: 'Not Found',
+
+                message:
+                    `Route ${request.method} ${request.url} was not found.`,
+
+                statusCode: 404
+            });
     }
 );
 
@@ -147,7 +222,11 @@ server.setNotFoundHandler(
  */
 
 server.setErrorHandler(
-    async (error, request, reply) => {
+    async (
+        error,
+        request,
+        reply
+    ) => {
         request.log.error(error);
 
         const statusCode =
@@ -157,17 +236,22 @@ server.setErrorHandler(
                 ? error.statusCode
                 : 500;
 
-        return reply.status(statusCode).send({
-            error:
-                statusCode === 500
-                    ? 'Internal Server Error'
-                    : error.name || 'Request Error',
-            message:
-                statusCode === 500
-                    ? 'An unexpected server error occurred.'
-                    : error.message,
-            statusCode
-        });
+        return reply
+            .status(statusCode)
+            .send({
+                error:
+                    statusCode === 500
+                        ? 'Internal Server Error'
+                        : error.name ||
+                          'Request Error',
+
+                message:
+                    statusCode === 500
+                        ? 'An unexpected server error occurred.'
+                        : error.message,
+
+                statusCode
+            });
     }
 );
 
@@ -177,19 +261,33 @@ server.setErrorHandler(
  * ------------------------------------------------------------
  */
 
+let shuttingDown = false;
+
 const shutdown = async (
     signal
 ) => {
-    server.log.info(
-        `11END received ${signal}. Shutting down safely.`
+    if (shuttingDown) {
+        return;
+    }
+
+    shuttingDown = true;
+
+    logger.info(
+        `11END received ${signal}. Starting graceful shutdown.`
     );
 
     try {
         await server.close();
 
+        await closeDatabaseConnection();
+
+        logger.info(
+            '11END shutdown completed successfully.'
+        );
+
         process.exit(0);
     } catch (error) {
-        server.log.error(
+        logger.error(
             error,
             '11END shutdown failed.'
         );
@@ -217,15 +315,21 @@ process.once(
 const startServer = async () => {
     try {
         await server.listen({
-            port: PORT,
-            host: HOST
+            port: config.server.port,
+            host: config.server.host
         });
 
-        server.log.info(
-            `${APP_NAME} backend running on port ${PORT}.`
+        logger.info(
+            {
+                host: config.server.host,
+                port: config.server.port,
+                environment:
+                    config.app.environment
+            },
+            '11END backend started successfully.'
         );
     } catch (error) {
-        server.log.error(
+        logger.error(
             error,
             '11END backend failed to start.'
         );
