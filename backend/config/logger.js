@@ -1,41 +1,40 @@
 /**
  * ============================================================
  * 11END — LOGGER CONFIGURATION
- * One Network. One Destination. Everything You Need, Delivered.
  * ============================================================
  *
- * Centralized application logging using Pino.
+ * Centralized application logging.
  *
  * Responsibilities:
- * - Provide one logging interface for the backend
+ * - Provide structured backend logging
+ * - Use the centralized environment configuration
+ * - Redact sensitive information
  * - Support development and production environments
- * - Respect LOG_LEVEL from environment configuration
- * - Avoid exposing sensitive credentials or secrets
- * - Provide structured logs suitable for monitoring systems
  *
  * SECURITY:
  * - Never log passwords, tokens, API keys or payment secrets.
- * - Sensitive request data must be sanitized before logging.
  * ============================================================
  */
 
 import pino from 'pino';
 
-const NODE_ENV =
-    process.env.NODE_ENV || 'development';
-
-const LOG_LEVEL =
-    process.env.LOG_LEVEL || 'info';
-
-const isProduction =
-    NODE_ENV === 'production';
+import env from './env.js';
 
 const logger = pino({
-    level: LOG_LEVEL,
+    level: env.server.logLevel,
+
+    base: {
+        service: env.app.name,
+        version: env.app.version,
+        environment: env.app.environment
+    },
+
+    timestamp: pino.stdTimeFunctions.isoTime,
 
     redact: {
         paths: [
             'password',
+            'passwordHash',
             'token',
             'accessToken',
             'refreshToken',
@@ -48,19 +47,9 @@ const logger = pino({
             'request.headers.authorization',
             'request.headers.cookie'
         ],
-        censor: '[REDACTED]'
-    },
 
-    ...(isProduction
-        ? {}
-        : {
-            transport: {
-                target: 'pino/file',
-                options: {
-                    destination: 1
-                }
-            }
-        })
+        censor: '[REDACTED]'
+    }
 });
 
 export default logger;
