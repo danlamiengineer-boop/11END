@@ -15,8 +15,8 @@ const AUTH_STATUS = Object.freeze({
 });
 
 const PASSWORD_POLICY = Object.freeze({
-    MIN_LENGTH: 12,
-    MAX_LENGTH: 128,
+    MIN_LENGTH: 6,
+    MAX_LENGTH: 12,
     BCRYPT_SALT_ROUNDS: 12
 });
 
